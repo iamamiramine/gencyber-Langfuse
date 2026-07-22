@@ -1,0 +1,174 @@
+# Self-hosted Langfuse for gencyber.
+#
+# langfuse-web is the only service joined to the shared
+# `generative-cybersecurity-network`; the agent reaches it at
+# http://langfuse-web:3000. Everything else (postgres/clickhouse/redis/minio +
+# the async worker) lives on the private `langfuse` network.
+#
+# Host access for inspection/UI: http://localhost:3001 (container port 3000;
+# host 3000 is already taken by the workbench PTY).
+#
+# Headless bootstrap: the LANGFUSE_INIT_* vars create an org/project/user and
+# fixed API keys on first boot, so the agent's keys are known ahead of time.
+#   public key: pk-lf-2e7e8e37-f56c-4b84-91d6-a42cd8cceaea
+#   secret key: sk-lf-7c003a78-f92e-4950-bdbb-722eeccf79dc
+#   UI login:   admin@gencyber.local / gencyber-admin
+
+x-langfuse-env: &langfuse-env
+  DATABASE_URL: postgresql://postgres:postgres@langfuse-postgres:5432/postgres
+  SALT: "32155def6cad067bd0553868828a37f1"
+  ENCRYPTION_KEY: "37224119039ffbe3282b65c28622b70d7185652442c6e7775ec8798cac151d19"
+  TELEMETRY_ENABLED: "false"
+  LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+  CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: clickhouse
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: myredissecret
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+services:
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: langfuse-worker
+    restart: unless-stopped
+    depends_on: &langfuse-deps
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+    environment:
+      <<: *langfuse-env
+    networks:
+      - langfuse
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: langfuse-web
+    restart: unless-stopped
+    depends_on: *langfuse-deps
+    ports:
+      - "3001:3000"
+    environment:
+      <<: *langfuse-env
+      # Next.js binds to $HOSTNAME; Docker defaults it to the container's primary
+      # network IP, which leaves the server unreachable from the *other* network
+      # (the shared one the agent uses). Force all-interfaces bind.
+      HOSTNAME: "0.0.0.0"
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: "31cef81945d261c726f39474efee8517"
+      LANGFUSE_INIT_ORG_ID: gencyber
+      LANGFUSE_INIT_ORG_NAME: gencyber
+      LANGFUSE_INIT_PROJECT_ID: gencyber
+      LANGFUSE_INIT_PROJECT_NAME: gencyber-agent
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-2e7e8e37-f56c-4b84-91d6-a42cd8cceaea
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-7c003a78-f92e-4950-bdbb-722eeccf79dc
+      LANGFUSE_INIT_USER_EMAIL: admin@gencyber.local
+      LANGFUSE_INIT_USER_NAME: gencyber-admin
+      LANGFUSE_INIT_USER_PASSWORD: gencyber-admin
+    networks:
+      - langfuse
+      - generative-cybersecurity-network
+
+  langfuse-postgres:
+    image: postgres:16
+    container_name: langfuse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - langfuse_postgres:/var/lib/postgresql/data
+    networks:
+      - langfuse
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: langfuse-clickhouse
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    networks:
+      - langfuse
+
+  langfuse-minio:
+    image: minio/minio
+    container_name: langfuse-minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server /data --console-address ":9001"'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - langfuse_minio:/data
+    networks:
+      - langfuse
+
+  langfuse-redis:
+    image: redis:7
+    container_name: langfuse-redis
+    restart: unless-stopped
+    command: --requirepass myredissecret
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - langfuse
+
+networks:
+  langfuse:
+    driver: bridge
+  generative-cybersecurity-network:
+    external: true
+
+volumes:
+  langfuse_postgres:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio:
