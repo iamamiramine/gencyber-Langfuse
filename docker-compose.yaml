@@ -10,35 +10,37 @@
 #
 # Headless bootstrap: the LANGFUSE_INIT_* vars create an org/project/user and
 # fixed API keys on first boot, so the agent's keys are known ahead of time.
-#   public key: pk-lf-2e7e8e37-f56c-4b84-91d6-a42cd8cceaea
-#   secret key: sk-lf-7c003a78-f92e-4950-bdbb-722eeccf79dc
-#   UI login:   admin@gencyber.local / gencyber-admin
+# Every credential is read from .env; copy example.env to .env and fill it in.
+# Generate fresh values with:
+#   python3 -c "import secrets,uuid; print(secrets.token_hex(16))"        # SALT, NEXTAUTH_SECRET
+#   python3 -c "import secrets; print(secrets.token_hex(32))"             # ENCRYPTION_KEY
+#   python3 -c "import uuid; print('sk-lf-'+str(uuid.uuid4()))"           # project keys
 
 x-langfuse-env: &langfuse-env
-  DATABASE_URL: postgresql://postgres:postgres@langfuse-postgres:5432/postgres
-  SALT: "32155def6cad067bd0553868828a37f1"
-  ENCRYPTION_KEY: "37224119039ffbe3282b65c28622b70d7185652442c6e7775ec8798cac151d19"
+  DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@langfuse-postgres:5432/postgres
+  SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in .env}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set LANGFUSE_ENCRYPTION_KEY in .env}
   TELEMETRY_ENABLED: "false"
   LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
   CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
   CLICKHOUSE_URL: http://langfuse-clickhouse:8123
   CLICKHOUSE_USER: clickhouse
-  CLICKHOUSE_PASSWORD: clickhouse
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
   CLICKHOUSE_CLUSTER_ENABLED: "false"
   REDIS_HOST: langfuse-redis
   REDIS_PORT: "6379"
-  REDIS_AUTH: myredissecret
+  REDIS_AUTH: ${REDIS_AUTH:?set REDIS_AUTH in .env}
   LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
   LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
   LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
-  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
   LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
   LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
   LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
   LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
   LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
   LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
-  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
   LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
   LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
   LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
@@ -76,16 +78,16 @@ services:
       # (the shared one the agent uses). Force all-interfaces bind.
       HOSTNAME: "0.0.0.0"
       NEXTAUTH_URL: http://localhost:3001
-      NEXTAUTH_SECRET: "31cef81945d261c726f39474efee8517"
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set NEXTAUTH_SECRET in .env}
       LANGFUSE_INIT_ORG_ID: gencyber
       LANGFUSE_INIT_ORG_NAME: gencyber
       LANGFUSE_INIT_PROJECT_ID: gencyber
       LANGFUSE_INIT_PROJECT_NAME: gencyber-agent
-      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-2e7e8e37-f56c-4b84-91d6-a42cd8cceaea
-      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-7c003a78-f92e-4950-bdbb-722eeccf79dc
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?set in .env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?set in .env}
       LANGFUSE_INIT_USER_EMAIL: admin@gencyber.local
       LANGFUSE_INIT_USER_NAME: gencyber-admin
-      LANGFUSE_INIT_USER_PASSWORD: gencyber-admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set in .env}
     networks:
       - langfuse
       - generative-cybersecurity-network
@@ -96,7 +98,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -116,7 +118,7 @@ services:
     environment:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
       interval: 5s
@@ -137,7 +139,7 @@ services:
     command: -c 'mkdir -p /data/langfuse && minio server /data --console-address ":9001"'
     environment:
       MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: miniosecret
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -152,9 +154,11 @@ services:
     image: redis:7
     container_name: langfuse-redis
     restart: unless-stopped
-    command: --requirepass myredissecret
+    command: --requirepass ${REDIS_AUTH:?set REDIS_AUTH in .env}
+    environment:
+      REDIS_AUTH: ${REDIS_AUTH:?set REDIS_AUTH in .env}
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_AUTH\" ping"]
       interval: 5s
       timeout: 5s
       retries: 10
